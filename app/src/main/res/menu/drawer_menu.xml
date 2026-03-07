@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <group android:checkableBehavior="single">
+        <item android:id="@+id/nav_home" android:title="Home / Zikr" android:icon="@android:drawable/ic_menu_compass" />
+        <item android:id="@+id/nav_social" android:title="Switch to Social" android:icon="@android:drawable/ic_menu_gallery" />
+    </group>
+    
+    <item android:title="Information">
+        <menu>
+            <item android:id="@+id/nav_about" android:title="About Us" android:icon="@android:drawable/ic_menu_info_details" />
+            <item android:id="@+id/nav_contact" android:title="Contact Us" android:icon="@android:drawable/ic_menu_send" />
+            <item android:id="@+id/nav_donate" android:title="Donate Us" android:icon="@android:drawable/ic_menu_myplaces" />
+        </menu>
+    </item>
+</menu>

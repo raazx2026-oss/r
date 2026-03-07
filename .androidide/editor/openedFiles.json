@@ -1,0 +1,80 @@
+{
+  "allFiles": [
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/java/com/zikr/QuizActivity.java",
+      "selection": {
+        "end": {
+          "column": 0,
+          "index": 5886,
+          "line": 151
+        },
+        "start": {
+          "column": 0,
+          "index": 5886,
+          "line": 151
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/res/layout/activity_quiz.xml",
+      "selection": {
+        "end": {
+          "column": 0,
+          "index": 5087,
+          "line": 127
+        },
+        "start": {
+          "column": 0,
+          "index": 5087,
+          "line": 127
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/java/com/zikr/QuizQuestion.java",
+      "selection": {
+        "end": {
+          "column": 0,
+          "index": 411,
+          "line": 15
+        },
+        "start": {
+          "column": 0,
+          "index": 411,
+          "line": 15
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/res/layout/fragment_contact.xml",
+      "selection": {
+        "end": {
+          "column": 45,
+          "index": 2319,
+          "line": 61
+        },
+        "start": {
+          "column": 45,
+          "index": 2319,
+          "line": 61
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/java/com/zikr/ContactFragment.java",
+      "selection": {
+        "end": {
+          "column": 0,
+          "index": 0,
+          "line": 0
+        },
+        "start": {
+          "column": 0,
+          "index": 0,
+          "line": 0
+        }
+      }
+    }
+  ],
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/zikr/app/src/main/res/layout/fragment_contact.xml"
+}

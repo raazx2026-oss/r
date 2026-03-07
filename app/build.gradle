@@ -1,15 +1,15 @@
-
 plugins {
     id 'com.android.application'
-    
+    // Firebase plugin zaroori hai
+    id 'com.google.gms.google-services' 
 }
 
 android {
-    namespace 'com.server'
+    namespace 'com.zikr'
     compileSdk 33
     
     defaultConfig {
-        applicationId "com.server"
+        applicationId "com.zikr"
         minSdk 21
         targetSdk 33
         versionCode 1
@@ -34,15 +34,23 @@ android {
 
     buildFeatures {
         viewBinding true
-        
     }
-    
 }
 
 dependencies {
-
-
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.9.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+
+    // --- FIREBASE DEPENDENCIES ---
+    
+    // Firebase BoM (Bill of Materials) - Isse sabhi Firebase libraries ka version auto-manage hota hai
+    implementation platform('com.google.firebase:firebase-bom:32.7.0')
+    
+    // Firebase Realtime Database (Admin.html se connect karne ke liye)
+    implementation 'com.google.firebase:firebase-database'
+    
+    // Firebase Analytics (Optional but recommended by Google)
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.github.bumptech.glide:glide:4.16.0'
 }

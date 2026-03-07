@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_gradient"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center">
+
+    <ImageView
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:src="@mipmap/ic_launcher"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Zikr &amp; Social App"
+        android:textColor="@color/gold"
+        android:textSize="26sp"
+        android:textStyle="bold"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Version 1.0.0"
+        android:textColor="@color/text_gray"
+        android:textSize="14sp"
+        android:layout_marginBottom="24dp"/>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Yeh app Ummah ko ek sath laane aur deen ki malumat ko aasan banane ke liye banaya gaya hai. Isme aap Zikr, Namaz ka tarika, aur Islamic community posts padh sakte hain."
+        android:textColor="@color/text_white"
+        android:textSize="16sp"
+        android:gravity="center"
+        android:lineSpacingExtra="6dp"/>
+</LinearLayout>

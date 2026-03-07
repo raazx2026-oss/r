@@ -14,6 +14,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "server"
+rootProject.name = "zikr"
 
 include(":app")
